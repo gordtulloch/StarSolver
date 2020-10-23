@@ -1,7 +1,11 @@
 import PyIndi
+from astropy.table import Table
+from astroquery.astrometry_net import AstrometryNet
+import photutils
 import time
 import sys
 import threading
+import os
      
 class IndiClient(PyIndi.BaseClient):
     def __init__(self):
@@ -40,6 +44,9 @@ device_telescope=None
 telescope_connect=None
 ccd="CCD Simulator"
 solveOk=0
+ast = AstrometryNet()
+ast.api_key = 'gymdcmjzgjwdnjra'
+plateSolve = 0 # 0=astrometry.net 1=local 2=remote
  
 # connect the server
 indiclient=IndiClient()
@@ -161,9 +168,39 @@ while (1):        # Loop forever
         filehandle = open('solve.fits', 'wb')
         filehandle.write(fits)
         filehandle.close()
-        exit()
+
         # Do a plate solve on the fits data
+        if (plateSolve == 0):
+            try_again = True
+            submission_id = None
+
+            while try_again:
+                try:
+                    if not submission_id:
+                        wcs_header = ast.solve_from_image('solve.fits',submission_id=submission_id)
+                    else:
+                        wcs_header = ast.monitor_submission(submission_id,solve_timeout=120)
+                except TimeoutError as e:
+                    submission_id = e.args[1]
+                else:
+                   # got a result, so terminate
+                   try_again = False
+
+        elif (plateSolve == 1): # Local solver
+            cmd="solve-field -O --no-plots --no-verify --resort --downsample 2 -3 "+str(telescope_radec[0].value)+" -4 "+str(telescope_radec[1].value)+" -L 24.1478 -H 26.6897 -u aw -5 30 solve.fits &> solve.err"
+            if (debug): 
+                print("Solving...")
+                print(cmd)
+            os.system(cmd)
+      
+        if (wcs_header):
+            print("Solve successful...")
+            print(wcs_header)
+        else:
+            print("Error, solve unsuccessful")
+        exit()     
         
+          
         # Compare the plate solve to the current RA/DEC
         
         # If within the threshold arcsecs set solveOk and continue
