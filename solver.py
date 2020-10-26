@@ -23,7 +23,6 @@ class IndiClient(PyIndi.BaseClient):
         pass
     def newBLOB(self, bp):
         global blobEvent
-        print("new BLOB ", bp.name)
         blobEvent.set()
         pass
     def newSwitch(self, svp):
@@ -165,6 +164,7 @@ while (1):        # Loop forever
         if os.path.exists('solve.requested'):
             os.remove('solve.requested')
             solveOk = False
+ 
         # Initiate an image on the camera
         blobEvent=threading.Event()
         blobEvent.clear()
@@ -173,8 +173,9 @@ while (1):        # Loop forever
         blobEvent.wait()
         blobEvent.clear()
         if debug:
-             print("name: ", ccd_ccd1[0].name," size: ", ccd_ccd1[0].size," format: ", ccd_ccd1[0].format)
+            print("name: ", ccd_ccd1[0].name," size: ", ccd_ccd1[0].size," format: ", ccd_ccd1[0].format)
         ccdimage=ccd_ccd1[0].getblobdata()
+
         # Write the image to disk - disabled because astap won't solve ccd simulator images
 #       filehandle = open('solve.fits', 'wb')
 #       filehandle.write(ccdimage)
