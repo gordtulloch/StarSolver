@@ -1,11 +1,16 @@
 import PyIndi
+import numpy as np
+from astropy import wcs
+from astropy.wcs import WCS
 from astropy.table import Table
-from astroquery.astrometry_net import AstrometryNet
+from astropy.io import fits
 import photutils
 import time
 import sys
 import threading
 import os
+import subprocess as subp
+import math
      
 class IndiClient(PyIndi.BaseClient):
     def __init__(self):
@@ -44,10 +49,8 @@ device_telescope=None
 telescope_connect=None
 ccd="CCD Simulator"
 solveOk=0
-ast = AstrometryNet()
-ast.api_key = 'gymdcmjzgjwdnjra'
-plateSolve = 0 # 0=astrometry.net 1=local 2=remote
- 
+maxDeviation = 30 # In ArcSecs
+
 # connect the server
 indiclient=IndiClient()
 indiclient.setServer("localhost",7624)
@@ -137,6 +140,7 @@ while not(ccd_ccd1):
 ###############################################################
 ## M A I N                                                   ##
 ###############################################################
+
 while (1):        # Loop forever
     # Update coordinates 
     telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")
@@ -145,76 +149,107 @@ while (1):        # Loop forever
         telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")      
 
     if (telescope_radec.s==PyIndi.IPS_BUSY):
-        if (debug==1):
-             print("Scope Moving ", telescope_radec[0].value, telescope_radec[1].value)
-             time.sleep(2)  
+        if debug:
+             print("Scope Moving ", telescope_radec[0].value, "  ", telescope_radec[1].value)
+             time.sleep(5)
+        solveOk=False  # We'll need to do a solve after the motion stops
+        if debug:
+            print("Scope moving no solve required.")
     else:
+        if debug:
+           print("Scope moving no solve required.")
         # Scope is not moving - are we finished or do we need another image?
-        if (solveOk):
+        if solveOk:
             continue
+        # See if User wants a solve by creating a solve.requested file
+        if os.path.exists('solve.requested'):
+            os.remove('solve.requested')
+            solveOk = False
         # Initiate an image on the camera
-        # we use here the threading.Event facility of Python
-        # we define an event for newBlob event
         blobEvent=threading.Event()
         blobEvent.clear()
         ccd_exposure[0].value=exposure
         indiclient.sendNewNumber(ccd_exposure)
         blobEvent.wait()
         blobEvent.clear()
-        #indiclient.sendNewNumber(ccd_exposure)
-        print("name: ", ccd_ccd1[0].name," size: ", ccd_ccd1[0].size," format: ", ccd_ccd1[0].format)
-        fits=ccd_ccd1[0].getblobdata()
-        # Write the image to disk
-        filehandle = open('solve.fits', 'wb')
-        filehandle.write(fits)
-        filehandle.close()
+        if debug:
+             print("name: ", ccd_ccd1[0].name," size: ", ccd_ccd1[0].size," format: ", ccd_ccd1[0].format)
+        ccdimage=ccd_ccd1[0].getblobdata()
+        # Write the image to disk - disabled because astap won't solve ccd simulator images
+#       filehandle = open('solve.fits', 'wb')
+#       filehandle.write(ccdimage)
+#       filehandle.close()
+
+        # Remove plate solve results
+        if os.path.exists('solve.ini'):
+           os.remove('solve.ini')
+        if os.path.exists('solve.wcs'):
+           os.remove('solve.wcs')
 
         # Do a plate solve on the fits data
-        if (plateSolve == 0):
-            try_again = True
-            submission_id = None
+        cmd="/usr/local/bin/astap -r 50 -f solve.fits >solve.err 2>&1"
+        if (debug): 
+            print("Solving...")
+            print(cmd)
+        # Create a process to call the solver and wait for completion 
+        timeout=0 
+        os.system(cmd)
+        while not os.path.exists('solve.wcs'):
+            if debug:
+                print ("Sleeping...")
+            time.sleep(0.5)
+            timeout=timeout+0.5
+            if (timeout==10):
+                print ("Error, solve not completed in 10s!")
+                exit()
 
-            while try_again:
-                try:
-                    if not submission_id:
-                        wcs_header = ast.solve_from_image('solve.fits',submission_id=submission_id)
-                    else:
-                        wcs_header = ast.monitor_submission(submission_id,solve_timeout=120)
-                except TimeoutError as e:
-                    submission_id = e.args[1]
-                else:
-                   # got a result, so terminate
-                   try_again = False
-
-        elif (plateSolve == 1): # Local solver
-            cmd="solve-field -O --no-plots --no-verify --resort --downsample 2 -3 "+str(telescope_radec[0].value)+" -4 "+str(telescope_radec[1].value)+" -L 24.1478 -H 26.6897 -u aw -5 30 solve.fits &> solve.err"
-            if (debug): 
-                print("Solving...")
-                print(cmd)
-            os.system(cmd)
-      
-        if (wcs_header):
-            print("Solve successful...")
-            print(wcs_header)
-        else:
-            print("Error, solve unsuccessful")
-        exit()     
+        # Load the wcs FITS hdulist using astropy.io.fits
+        #with fits.open('solve.wcs', mode='readonly', ignore_missing_end=True) as fitsfile:
+        #    w = WCS(fitsfile[0].header) 
+        #    solveRa=w.wcs.crval[0]
+        #    solveDec=w.wcs.crval[1]
+        # Kludge because wcs file keeps bombing with corrupt file error, doh!
+        os.system("cat solve.wcs | grep CRVAL1 | cut -b12-30 > solve.kludge")
+        os.system("cat solve.wcs | grep CRVAL2 | cut -b12-30 >> solve.kludge")
+        kludgefile=open("solve.kludge","r")
+        rastr=kludgefile.read(19)
+        decstr=kludgefile.read(1) # ignore the CR 
+        decstr=kludgefile.read(19)
+        if debug:
+            print("Kludge coords: ",rastr," ",decstr)
+        kludgefile.close()
+        solveRa=float(rastr)
+        solveDec=float(decstr)
         
-          
+        if (debug): 
+            print("Solved RA= ",solveRa," Dec=",solveDec)
+
+        # Load the ccd image FITS hdulist using astropy.io.fits
+        with fits.open('solve.fits', mode='readonly', ignore_missing_end=True) as fitsfile:
+            w = WCS(fitsfile[0].header) 
+            ccdRa=w.wcs.crval[0]
+            ccdDec=w.wcs.crval[1]
+        if (debug): 
+           print("CCD RA= ",solveRa," Dec=",solveDec)
+            
         # Compare the plate solve to the current RA/DEC
+        deltaRa = solveRa - ccdRa
+        deltaDec = solveDec - ccdDec
+        if (debug): 
+           print("Delta RA= ",deltaRa," Delta Dec=",deltaDec)
         
-        # If within the threshold arcsecs set solveOk and continue
- 
-        # Otherwise set the desired coordinate and slew
-        #telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")
-        #while not(telescope_radec):
-        #    time.sleep(0.5)
-        #telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")
-        #telescope_radec[0].value=vega['ra']
-        #telescope_radec[1].value=vega['dec']
-        #indiclient.sendNewNumber(telescope_radec)
-        # and wait for the scope has finished moving
-        #while (telescope_radec.s==PyIndi.IPS_BUSY):
-        #   print("Scope Moving ", telescope_radec[0].value, telescope_radec[1].value)
-        #   time.sleep(2)
+        # If within the threshold arcsecs move the scope set solveOk and continue
+        if math.sqrt(deltaRa**2+deltaDec**2) < (maxDeviation/60/60):
+           if debug:
+               print("Moving scope to computed coordinates ",ccdRa+deltaRa," ",ccdDec+deltaDec)
+           # Otherwise set the desired coordinate and slew
+           telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")
+           while not(telescope_radec):
+               time.sleep(0.5)
+           telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")
+           telescope_radec[0].value=ccdRa+deltaRa
+           telescope_radec[1].value=ccdDec+deltaDec
+           indiclient.sendNewNumber(telescope_radec)
+        else:
+           solveOk=True
 
