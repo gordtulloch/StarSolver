@@ -87,18 +87,12 @@ while not(telescope_on_coord_set):
     time.sleep(0.5)
     telescope_on_coord_set=device_telescope.getSwitch("ON_COORD_SET")
 
-# the order below is defined in the property vector, look at the standard Properties page
-# or enumerate them in the Python shell when you're developing your program
+# the order below is defined in the property vector
 telescope_on_coord_set[0].s=PyIndi.ISS_ON  # TRACK
 telescope_on_coord_set[1].s=PyIndi.ISS_OFF # SLEW
 telescope_on_coord_set[2].s=PyIndi.ISS_OFF # SYNC
 indiclient.sendNewSwitch(telescope_on_coord_set)
 
-# Set up coordinates 
-telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")
-while not(telescope_radec):
-    time.sleep(0.5)
-    telescope_radec=device_telescope.getNumber("EQUATORIAL_EOD_COORD")      
 
 # Set up CCD camera 
 device_ccd=indiclient.getDevice(ccd)
@@ -120,12 +114,12 @@ while not(ccd_exposure):
     time.sleep(0.5)
     ccd_exposure=device_ccd.getNumber("CCD_EXPOSURE")
  
-# Ensure the CCD simulator snoops the telescope simulator
+# Ensure the CCD driver snoops the telescope driver
 ccd_active_devices=device_ccd.getText("ACTIVE_DEVICES")
 while not(ccd_active_devices):
     time.sleep(0.5)
     ccd_active_devices=device_ccd.getText("ACTIVE_DEVICES")
-ccd_active_devices[0].text="Telescope Simulator"
+ccd_active_devices[0].text=telescope
 indiclient.sendNewText(ccd_active_devices)
  
 # we should inform the indi server that we want to receive the
@@ -155,8 +149,6 @@ while (1):        # Loop forever
         if debug:
             print("Scope moving no solve required.")
     else:
-        if debug:
-           print("Scope moving no solve required.")
         # Scope is not moving - are we finished or do we need another image?
         if solveOk:
             continue
@@ -164,6 +156,9 @@ while (1):        # Loop forever
         if os.path.exists('solve.requested'):
             os.remove('solve.requested')
             solveOk = False
+
+        if debug:
+            print("Scope tracking solve required.")
  
         # Initiate an image on the camera
         blobEvent=threading.Event()
@@ -233,14 +228,21 @@ while (1):        # Loop forever
         if (debug): 
            print("CCD RA= ",solveRa," Dec=",solveDec)
             
-        # Compare the plate solve to the current RA/DEC
-        deltaRa = solveRa - ccdRa
-        deltaDec = solveDec - ccdDec
+        # Compare the plate solve to the current RA/DEC, convert to arcsecs
+        deltaRa = (solveRa - ccdRa)*60*60 
+        deltaDec = (solveDec - ccdDec)*60*60
         if (debug): 
            print("Delta RA= ",deltaRa," Delta Dec=",deltaDec)
         
         # If within the threshold arcsecs move the scope set solveOk and continue
-        if math.sqrt(deltaRa**2+deltaDec**2) < (maxDeviation/60/60):
+        if ((deltaRa < 5) or (deltaDec < 5)):
+            if debug:
+                print("Deviation < 25 arcsecs, ignoring")
+            solveOk=True
+            continue;
+        if debug:
+            print("Deviation ",math.sqrt(deltaRa**2+deltaDec**2),"arcsecs compared to max ",maxDeviation," arcsecs")
+        if math.sqrt(deltaRa**2+deltaDec**2) > maxDeviation:
            if debug:
                print("Moving scope to computed coordinates ",ccdRa+deltaRa," ",ccdDec+deltaDec)
            # Otherwise set the desired coordinate and slew
